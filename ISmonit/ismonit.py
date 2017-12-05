@@ -31,6 +31,9 @@ class HV:
     disk_per_controller = 0
     disks = 0
 
+    def __init__(self, label = None, ip_address = '1.1.1.1'):
+        self.label = label or 'default'
+
     def controlers_count(self):
         count = self.disks // self.disk_per_controller
         rest = self.disks % self.disk_per_controller
