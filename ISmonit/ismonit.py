@@ -4,12 +4,32 @@
 # This utility designed by Yatsyshyn Rostyslav
 # for internal L3 team using
 
-import argparse, re, MySQLdb, subprocess, socket, sys, os, errno
+# import usual modules
+import argparse, re, subprocess, sys, os
 
-from tabulate import tabulate
+def install_pkgs(pkgs_list):
+    '''
+    This function installs missed modules
+    '''
+    tmp = 'pip install'
+    for i in len(pkgs_list):
+        tmp = tmp + ' ' + i
+    subprocess.check_output(['bash', '-c', tmp])
+
+# import non usual modules
+try:
+    import MySQLdb
+    from tabulate import tabulate
+    pkgs_list = ['MySQLdb-python','tabulate']
+except ImportError:
+    output = subprocess.check_output(['bash', '-c', 'rpm -qa| grep python-pip'])
+    install_pkgs(pkgs_list)
+except subprocess.CalledProcessError:
+    subprocess.check_output(['bash', '-c', 'yum -y install python-pip'])
+    install_pkgs(pkgs_list)
 
 # version of ismonit utility
-__version__ = "0.3.2"
+__version__ = "0.3.5"
 
 # Configuration default files
 DB_CONF_PATH = '/onapp/interface/config/database.yml'
@@ -143,20 +163,29 @@ def show_list():
     """
     This function prints list of HVs ad BSs
     """
-    lst = bss_list + hvs_list
     on_line, off_line = [],[]
     show_header()
-    on_line.append(['ONLINE:','','','','','',''])
-    off_line.append(['OFFLINE:','','','','','',''])
-    for i in lst:
-        if i.online == 1:
-            on_line.append([i.label,i.ip_address,i.host_id,i.hv_zone,i.mtu,i.os_version,i.type])
-        elif i.online == 0:
-            off_line.append([i.label,i.ip_address,i.host_id,i.hv_zone,i.mtu,i.os_version,i.type])
+    on_line.append([YELLOW+'ONLINE:'+END,'','','','','','',''])
+    off_line.append([YELLOW+'OFFLINE:'+END,'','','','','','',''])
+    def make_table(lst, bs=0):
+        '''
+        This function is used only separation BSs and HVs in view list
+        '''
+        if bs == 0:
+            addition = ''
+        else:
+            addition = 'Backup Server'
+        for i in lst:
+            if i.online == 1:
+                on_line.append([i.label,i.ip_address,i.host_id,i.hv_zone,i.mtu,i.os_version,i.type,addition])
+            elif i.online == 0:
+                off_line.append([i.label,i.ip_address,i.host_id,i.hv_zone,i.mtu,i.os_version,i.type,addition])
+    make_table(bss_list, 1)
+    make_table(hvs_list)
     if len(off_line) > 1:
-        print tabulate(on_line+off_line,headers=['label','ip_address','host_id','hv_zone','mtu','os','type'])
+        print tabulate(on_line+off_line,headers=['label','ip_address','host_id','hv_zone','mtu','os','type',''])
     else:
-        print tabulate(on_line,headers=['label','ip_address','host_id','hv_zone','mtu','os','type'])
+        print tabulate(on_line,headers=['label','ip_address','host_id','hv_zone','mtu','os','type',''])
 
 def show_ips():
     """
@@ -169,16 +198,64 @@ def show_ips():
     for i in lst:
         if i.online == 1:
             hvs_ips.append(i.ip_address.split('.'))
-    # get last oct from each HV and BS
-    for i in range(0,len(hvs_ips)):
-        hvs_end.append(hvs_ips[i][3])
-    hvs_end.sort()
-    # convert to string
-    crs_string = "{" + ",".join(hvs_end) + "}"
+    output = []
+    def build_str(ips, lvl=0):
+        '''
+        This function runs in recursion for building structures
+        '''
+        def grouping(d):
+            '''
+            This function formats output for last octet
+            '''
+            d.sort()
+            m = [[d[0]]]
+            count = 0
+            lst = []
+            # Checking difference in 1 trough all list
+            for x in d[1:]:
+                count += 1
+                # Grouping them
+                if x - 1 == d[count - 1]:
+                    m[-1].append(x)
+                else:
+                    m.append([x])
+            # Formatting output for last octet
+            for y in m:
+                # In case there is more then one value
+                if len(y) > 1:
+                    lst.append(str(y[0]) + '..' + str(y[-1]))
+                else:
+                    lst.append(str(y[0]))
+            return lst
+        # It runs whern exist ips in list
+        while len(ips) > 0:
+            tmp = ips[0][lvl]
+            buf = []
+            # Converting to tuple
+            for i in tuple(ips):
+                if tmp == i[lvl]:
+                    buf.append(i)
+                    # Eliminate buffered ip
+                    ips.pop(ips.index(i))
+            if lvl < 2:
+                a = build_str(buf, lvl + 1)
+            else:
+                ipss = []
+                for i in buf:
+                    ipss.append(int(i[lvl + 1]))
+                # grouping last 4 octet of each ip address
+                ipss = grouping(ipss)
+                # Formatting with {}
+                a = i[lvl] + '.' + '{' + ",".join(ipss) + '}'
+                # Adds firtest octets
+                output.append((buf[0][0] + '.' + buf[0][1] + '.' + a))
+        return " ".join(output)
+    # Get sorted and formatted list of management ips
+    mgt_ips = build_str(hvs_ips)
     # Print mangement IPs of Hvs and BSs
     print YELLOW+BOLD+'From CP:'+END
-    print (YELLOW+ 'Get all CRs :'+END + 'for i in {}.{}.{}.{}; do echo $i; ssh root@$i uptime; done\n'.format(hvs_ips[0][0],hvs_ips[0][1],hvs_ips[0][2],crs_string))
-    print (YELLOW+ 'Copy to CRs :'+END + 'for i in {}.{}.{}.{}; do echo $i; scp /tmp/ root@$i:/tmp ; done\n'.format(hvs_ips[0][0],hvs_ips[0][1],hvs_ips[0][2],crs_string))
+    print (YELLOW+ 'Get all CRs :'+END + 'for i in {}; do echo $i; ssh root@$i uptime; done\n'.format(mgt_ips))
+    print (YELLOW+ 'Copy to CRs :'+END + 'for i in {}; do echo $i; scp /tmp/ root@$i:/tmp ; done\n'.format(mgt_ips))
     # get last oct for SCs
     for i in hvs_list:
         # Checking if there are some ips of controllers
